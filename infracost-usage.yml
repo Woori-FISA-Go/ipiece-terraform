@@ -1,13 +1,14 @@
 version: 0.1
-resource_usage:
-  # 1. NAT GW: 'monthly_gb_processed' -> 'monthly_data_processed_gb'
-  aws_nat_gateway.this[0]:
-    monthly_data_processed_gb: 200
-
-  # 2. S3: 항목들이 'standard:' 하위로 들어가야 함
-  # 3. S3: 'monthly_gb' -> 'storage_gb'
-  aws_s3_bucket.logs:
-    standard: 
-      storage_gb: 500
-      monthly_tier_1_requests: 2000000
-      monthly_tier_2_requests: 5000000
+projects:
+  - path: .  # <-- Terraform 코드가 있는 루트 경로
+    
+    # 이 프로젝트에 적용할 사용량 데이터를 명시
+    resource_usage:
+      aws_nat_gateway.this[0]:
+        monthly_data_processed_gb: 200
+    
+      aws_s3_bucket.logs:
+        standard: 
+          storage_gb: 500
+          monthly_tier_1_requests: 2000000
+          monthly_tier_2_requests: 5000000
