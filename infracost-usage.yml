@@ -1,14 +1,25 @@
 version: 0.1
-projects:
-  - path: .  # <-- Terraform 코드가 있는 루트 경로
-    
-    # 이 프로젝트에 적용할 사용량 데이터를 명시
-    resource_usage:
-      aws_nat_gateway.this[0]:
-        monthly_data_processed_gb: 200
-    
-      aws_s3_bucket.logs:
-        standard: 
-          storage_gb: 500
-          monthly_tier_1_requests: 2000000
-          monthly_tier_2_requests: 5000000
+resource_usage:
+
+  # --- NAT Gateway (총 200GB, 2대에 각각 100GB씩 할당) ---
+  module.vpc.aws_nat_gateway.this[0]:
+    monthly_data_processed_gb: 100
+  module.vpc.aws_nat_gateway.this[1]:
+    monthly_data_processed_gb: 100
+
+  # --- EKS 클러스터용 CloudWatch Logs ---
+  module.eks.aws_cloudwatch_log_group.this[0]:
+    monthly_data_ingested_gb: 100   # (기존 monthly_gb)
+    monthly_data_scanned_gb: 50
+    monthly_archive_storage_gb: 200 # (기존 monthly_archive_gb)
+
+  # --- EKS 노드 그룹 (AZ별 2대, 총 4대) ---
+  # 'nodes'는 desired_size와 동일하게 설정합니다.
+  'module.eks.module.eks_managed_node_group["az1"].aws_eks_node_group.this[0]':
+    nodes: 2
+  'module.eks.module.eks_managed_node_group["az2"].aws_eks_node_group.this[0]':
+    nodes: 2
+
+  # --- RDS (스토리지 사용량) ---
+  'module.rds.module.db_instance.aws_db_instance.this[0]':
+    monthly_storage_gb: 100 # (allocated_storage와 동일하게)

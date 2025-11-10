@@ -1,143 +1,203 @@
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = ">= 1.6.0"
+
   required_providers {
-    aws    = { source = "hashicorp/aws",    version = "~> 5.0" }
-    random = { source = "hashicorp/random", version = "~> 3.6" }
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.61"
+    }
   }
 }
 
 provider "aws" {
-  region = var.region
+  region = var.aws_region
 }
 
-locals {
-  tags = merge({
-    Project     = "infracost-demo"
-    CostCenter  = "cc-001"
-    Environment = var.environment
-  }, var.extra_tags)
-}
+############################################
+# 1) VPC (2AZ, Pub/Priv/DB + NAT per AZ)
+############################################
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 5.5"
 
-# ───────────────────────────────────────────────────────────────────────────
-# Networking (VPC + Public Subnet + IGW)  — NAT GW는 옵션(enable_nat_gateway)
-# ───────────────────────────────────────────────────────────────────────────
-resource "aws_vpc" "this" {
-  cidr_block           = "10.0.0.0/16"
+  name = "${var.project_name}-vpc"
+  cidr = var.vpc_cidr
+
+  azs              = var.azs
+  public_subnets   = var.public_subnet_cidrs
+  private_subnets  = var.private_subnet_cidrs
+  database_subnets = var.db_subnet_cidrs
+
+  enable_nat_gateway   = true
+  single_nat_gateway   = false
+  one_nat_gateway_per_az = true
+
   enable_dns_hostnames = true
   enable_dns_support   = true
-  tags = merge(local.tags, { Name = "demo-vpc" })
+
+  tags = { Project = var.project_name }
 }
 
-resource "aws_internet_gateway" "this" {
-  vpc_id = aws_vpc.this.id
-  tags   = merge(local.tags, { Name = "demo-igw" })
-}
+############################################
+# 2) EKS (NodeGroup: AZ별 2대)
+############################################
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "~> 20.8"
 
-resource "aws_subnet" "public_a" {
-  vpc_id                  = aws_vpc.this.id
-  cidr_block              = "10.0.1.0/24"
-  map_public_ip_on_launch = true
-  availability_zone       = var.az
-  tags = merge(local.tags, { Name = "demo-public-a" })
-}
+  cluster_name    = "${var.project_name}-eks"
+  cluster_version = var.eks_version
 
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.this.id
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.this.id
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+
+  cluster_endpoint_public_access  = false # 🚨 'apply'가 로컬 PC이면 실패합니다.
+  cluster_endpoint_private_access = true
+
+  eks_managed_node_groups = {
+    az1 = {
+      name           = "mng-az1"
+      subnet_ids     = [module.vpc.private_subnets[0]]
+      instance_types = [var.node_instance_type]
+      min_size       = 2
+      desired_size   = 2
+      max_size       = 6
+      disk_size      = var.node_disk_size
+    }
+    az2 = {
+      name           = "mng-az2"
+      subnet_ids     = [module.vpc.private_subnets[1]]
+      instance_types = [var.node_instance_type]
+      min_size       = 2
+      desired_size   = 2
+      max_size       = 6
+      disk_size      = var.node_disk_size
+    }
   }
-  tags = merge(local.tags, { Name = "demo-public-rt" })
+
+  tags = { Project = var.project_name }
 }
 
-resource "aws_route_table_association" "public_a" {
-  subnet_id      = aws_subnet.public_a.id
-  route_table_id = aws_route_table.public.id
-}
+############################################
+# 2b) ✅ EKS -> RDS/Redis 접근용 보안 그룹
+############################################
 
-# NAT Gateway (시간당 + 처리량 비용) — Diff 확인용으로 매우 효과적
-resource "aws_eip" "nat" {
-  count = var.enable_nat_gateway ? 1 : 0
-  domain = "vpc"
-  tags   = merge(local.tags, { Name = "demo-nat-eip" })
-}
+# [신규] RDS(MySQL) 보안 그룹
+resource "aws_security_group" "rds" {
+  name        = "${var.project_name}-rds-sg"
+  description = "Allow EKS nodes to access RDS"
+  vpc_id      = module.vpc.vpc_id
 
-resource "aws_nat_gateway" "this" {
-  count         = var.enable_nat_gateway ? 1 : 0
-  allocation_id = aws_eip.nat[0].id
-  subnet_id     = aws_subnet.public_a.id
-  tags          = merge(local.tags, { Name = "demo-nat-gw" })
-}
-
-# ───────────────────────────────────────────────────────────────────────────
-# Compute (EC2) — 소형 인스턴스 1대
-# ───────────────────────────────────────────────────────────────────────────
-data "aws_ssm_parameter" "al2023" {
-  # 최신 Amazon Linux 2023 (x86_64)
-  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64"
-}
-
-resource "aws_security_group" "web" {
-  name        = "demo-sg-web"
-  description = "Allow HTTP"
-  vpc_id      = aws_vpc.this.id
   ingress {
-    description = "HTTP"
-    from_port   = 80
-    to_port     = 80
+    description = "EKS Nodes to MySQL"
+    from_port   = 3306
+    to_port     = 3306
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    # EKS 모듈이 생성한 '노드 보안 그룹' ID를 참조합니다.
+    security_groups = [module.eks.node_security_group_id]
   }
+
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-  tags = merge(local.tags, { Name = "demo-sg-web" })
+
+  tags = { Project = var.project_name }
 }
 
-resource "aws_instance" "web" {
-  count                       = var.enable_ec2 ? 1 : 0
-  ami                         = data.aws_ssm_parameter.al2023.value
-  instance_type               = var.instance_type
-  subnet_id                   = aws_subnet.public_a.id
-  vpc_security_group_ids      = [aws_security_group.web.id]
-  associate_public_ip_address = true
-  tags                        = merge(local.tags, { Name = "demo-ec2" })
-}
+# [신규] ElastiCache(Redis) 보안 그룹
+resource "aws_security_group" "redis" {
+  name        = "${var.project_name}-redis-sg"
+  description = "Allow EKS nodes to access Redis"
+  vpc_id      = module.vpc.vpc_id
 
-# ───────────────────────────────────────────────────────────────────────────
-# Storage (S3) — 사용량 가정(infracost-usage.yml)으로 정확도 ↑
-# ───────────────────────────────────────────────────────────────────────────
-resource "random_id" "suffix" {
-  byte_length = 3
-}
-
-resource "aws_s3_bucket" "logs" {
-  bucket = "tf-costdemo-${random_id.suffix.hex}"
-  tags   = merge(local.tags, { Name = "demo-logs" })
-}
-
-resource "aws_s3_bucket_versioning" "logs" {
-  bucket = aws_s3_bucket.logs.id
-  versioning_configuration { status = "Enabled" }
-}
-
-# ───────────────────────────────────────────────────────────────────────────
-# Database (DynamoDB) — PROVISIONED으로 고정비 발생 → Diff에 명확
-# ───────────────────────────────────────────────────────────────────────────
-resource "aws_dynamodb_table" "orders" {
-  name           = "demo-orders"
-  billing_mode   = "PROVISIONED"
-  read_capacity  = var.dynamodb_read_capacity
-  write_capacity = var.dynamodb_write_capacity
-
-  hash_key = "id"
-  attribute {
-    name = "id"
-    type = "S"
+  ingress {
+    description = "EKS Nodes to Redis"
+    from_port   = 6379
+    to_port     = 6379
+    protocol    = "tcp"
+    # EKS 모듈이 생성한 '노드 보안 그룹' ID를 참조합니다.
+    security_groups = [module.eks.node_security_group_id]
   }
 
-  tags = merge(local.tags, { Name = "demo-dynamodb" })
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Project = var.project_name }
+}
+
+
+############################################
+# 3) RDS (MySQL, Multi-AZ)
+############################################
+module "rds" {
+  source  = "terraform-aws-modules/rds/aws"
+  version = "~> 6.13.1"
+
+  identifier           = "${var.project_name}-rds"
+  engine               = var.rds_engine
+  engine_version       = var.rds_engine_version
+  major_engine_version = "8.0"
+  instance_class       = var.rds_instance_class
+  allocated_storage    = var.rds_allocated_storage
+  multi_az             = true
+  storage_encrypted    = true
+  skip_final_snapshot  = true
+  backup_retention_period = var.rds_backup_retention
+  username             = var.db_username
+  password             = var.db_password
+  db_name              = "appdb"
+  port                 = 3306
+  subnet_ids           = module.vpc.database_subnets
+
+  # ✅ [수정] Plan 오류 해결을 위해 'family' 명시
+  family = "mysql8.0"
+
+  # ✅ [수정] Default SG 대신 위에서 생성한 'rds' 전용 SG 사용
+  vpc_security_group_ids = [aws_security_group.rds.id]
+
+  tags = { Project = var.project_name }
+}
+
+############################################
+# 4) ElastiCache Redis
+############################################
+resource "aws_elasticache_subnet_group" "this" {
+  name       = "${var.project_name}-redis-subnets"
+  subnet_ids = module.vpc.private_subnets # Redis는 DB Subnet이 아닌 Private Subnet 권장
+}
+
+resource "aws_elasticache_replication_group" "this" {
+  replication_group_id     = "${var.project_name}-redis"
+  description              = "Redis for ${var.project_name}"
+  engine                   = "redis"
+  engine_version           = "7.1"
+  node_type                = var.redis_node_type
+  automatic_failover_enabled = var.redis_num_replicas > 0 ? true : false
+  num_node_groups          = 1
+  replicas_per_node_group  = var.redis_num_replicas
+  port                     = 6379
+  at_rest_encryption_enabled = true
+  transit_encryption_enabled = true
+  subnet_group_name        = aws_elasticache_subnet_group.this.name
+  apply_immediately        = true
+
+  # ✅ [수정] Default SG 대신 위에서 생성한 'redis' 전용 SG 사용
+  security_group_ids = [aws_security_group.redis.id]
+
+  tags = { Project = var.project_name }
+}
+
+############################################
+# 5) Route53 퍼블릭 호스트존 (옵션)
+############################################
+resource "aws_route53_zone" "public" {
+  count = var.enable_route53 ? 1 : 0
+  name  = var.route53_zone_name
 }
