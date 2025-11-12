@@ -1,6 +1,0 @@
-version: 0.1
-
-projects:
-  # 'path'에 Terraform 코드(.)가 아닌, 
-  # 생성된 plan.json 파일 경로를 직접 지정합니다.
-  - path: baseline.plan.json
