@@ -20,12 +20,14 @@ module "db_ha" {
   name = "cloud-ha-lab-dev"
 
   # 네트워크 모듈에서 만든 값 가져오기
-  vpc_id             = data.terraform_remote_state.network.outputs.vpc_id
+  vpc_id               = data.terraform_remote_state.network.outputs.vpc_id
   private_subnet_ids = data.terraform_remote_state.network.outputs.private_subnet_ids
 
   # 🔥 여기 중요: tfvars에서 넣어준 값 사용
-  ami_id       = var.ami_id
-  ssh_key_name = var.ssh_key_name
+  ami_id         = var.ami_id
+  ssh_key_name  = var.ssh_key_name
+  # 🔽 'private_ips' 변수를 모듈에 전달하도록 추가
+  private_ips    = var.private_ips
 
   # 온프레 & WireGuard 대역에서 DB 접근 허용
   allowed_onprem_cidrs = [
