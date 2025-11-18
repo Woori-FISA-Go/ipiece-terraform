@@ -33,7 +33,6 @@ FISA 교육장의 **공용 온프레미스 서버(GSC 01, 04, 05)** 를 기반�
 - NIC 2 → **VM 서비스 트래픽**을 위한 *Internet Switch*
 
 vCenter의 중앙 관리 기능(vMotion·호스트 모니터링·리소스 분배)을 활용해
-
 5개 팀이 한정된 자원을 **논리적으로 격리된 환경**에서 사용할 수 있도록 구성했습니다.
 
 </details>
@@ -41,21 +40,111 @@ vCenter의 중앙 관리 기능(vMotion·호스트 모니터링·리소스 분�
 <summary><strong>② 팀별 가상 네트워크 격리</strong></summary>
 <br>
 
-서로 다른 팀끼리 **IP 충돌 없이 네트워크 격리**를 제공하기 위해
-
-각 팀별로 **pfSense 기반 가상 방화벽**을 구축했으며, 서로 다른 사설 IP 대역을 부여받았습니다.
+서로 다른 팀끼리 **IP 충돌 없이 네트워크를 격리**하기 위해  
+각 팀별로 **pfSense 기반 가상 방화벽**을 구축하고, 서로 다른 사설 IP 대역을 할당했습니다.
 
 - 예: `172.16.1.x`, `172.16.2.x` …
-
-이를 통해 각 팀은 **독립된 실험 환경**에서 안전하게 개발·테스트를 수행할 수 있었습니다.
 
 </details>
 
 <br>
 
 ---
+## 1.2. 개발 환경 구성 (네트워크 / VPN 인프라)
 
-## 1.2. 하이브리드 환경 구축 및 운영 최적화
+먼저 **온프레미스와 AWS가 서로 프라이빗 IP로 통신**할 수 있도록 네트워크 인프라를 구축했습니다.
+
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/2cafc7e0-1a59-457a-9fca-99dea6a062a9"
+       alt="온프레–AWS 하이브리드 네트워크 개요"
+       width="70%" />
+</div>
+
+- 온프레미스 내부망: `172.16.4.0/24`
+- 개발자 VPN 대역(노트북): `172.16.60.0/24`
+- AWS VPC: `10.0.0.0/16`
+
+> 결과적으로 **온프레(172.16.4.x)와 AWS VPC(10.0.x.x)는  
+> 모두 VPN 터널을 통해서만 서로 통신**하도록 설계했습니다.
+
+---
+
+<details>
+<summary><strong>① 주소 설계 & 방화벽 승인</strong></summary>
+
+- 온프레미스, 개발자 VPN, AWS VPC 세 영역이 **서로 겹치지 않도록** IP 대역을 분리했습니다.
+- 온프레에서 `10.0.0.0/16` 으로 향하는 트래픽은 모두 VPN으로 라우팅되도록 설계했습니다.
+  
+<br>
+
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/ad06e924-2588-4169-8ab2-5d54148a169c"
+       alt="IP 대역 및 라우팅 설계"
+       width="55%" />
+</div>
+
+- 네트워크 관리자에게 AWS와의 IPsec 통신을 위해  
+  **UDP 500, UDP 4500, ESP(프로토콜 50)** 개방을 공식 요청했습니다.
+- 이후 pfSense를 IPsec 게이트웨이로 구성하여  
+  `172.16.4.0/24` ↔ `10.0.0.0/16` 구간을 **Site-to-Site VPN** 으로 연결했습니다.
+
+<br>
+  
+</details>
+
+<details>
+<summary><strong>② 개발자 노트북 WireGuard 구성</strong></summary>
+<br>
+
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/bc7b6c82-730e-46e1-86ed-8475a582d880"
+       alt="개발자 노트북 WireGuard 설정"
+       width="60%" />
+</div>
+
+- `Address = 172.16.60.3/32` : 개발자 노트북에 VPN용 가상 IP 할당  
+- `AllowedIPs = 172.16.60.0/24, 172.16.4.0/24, 10.0.0.0/16`  
+  → 세 대역으로 나가는 트래픽을 모두 WireGuard 터널로 전달
+- `Endpoint = 192.168.0.9:51821` : pfSense(WireGuard 서버)의 사설 IP/포트
+
+VPN만 연결하면, 온프레(`172.16.4.x`)와 AWS(`10.0.x.x`)의 프라이빗 리소스를  
+로컬 네트워크처럼 바로 접근할 수 있도록 맞춰두었습니다.
+
+<br>
+
+</details>
+
+<details>
+<summary><strong>③ 라우터 / pfSense 설정 스크린샷 모음</strong></summary>
+<br>
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="https://github.com/user-attachments/assets/8978659b-f5fc-4eb7-bd95-2ef438572351"
+           alt="공유기 포트 포워딩 설정"
+           width="100%" />
+    </td>
+    <td align="center" width="50%">
+      <img src="https://github.com/user-attachments/assets/5f9fefac-2782-4ab3-92e4-98a2e48b3ac0"
+           alt="pfSense WireGuard / IPsec 상태"
+           width="100%" />
+    </td>
+  </tr>
+</table>
+
+- 공유기에서 WireGuard·IPsec 관련 포트를 pfSense로 포워딩해  
+  외부에서 들어오는 VPN 트래픽이 모두 pfSense로 도달하도록 설정했습니다.
+- pfSense에서는
+  - AWS VPN 게이트웨이와 IPsec 터널 두 개를 구성하고,
+  - `172.16.4.0/24`, `172.16.60.0/24` ↔ `10.0.0.0/16` 을 Phase2에 등록했습니다.
+- WireGuard 상태 화면에서는 각 팀원 노트북(`172.16.60.x/32`)의 접속 여부를 확인했습니다.
+
+<br>
+
+</details>
+
+## 1.3. 하이브리드 환경 구축 및 운영 최적화
 
 vSphere와 AWS 클라우드를 연동한 **하이브리드 인프라** 구축을 목표로 했습니다.
 
@@ -84,7 +173,7 @@ vSphere와 AWS 클라우드를 연동한 **하이브리드 인프라** 구축을
 ---
 ### 데이터베이스 구축 방식 (EC2 직접 구축 vs. Amazon RDS)
 
-**결론: EKS를 사용함으로써 $450 안에서 RDS(특히 HA 구성)는 비용 부담이 너무 커, EC2에 PostgreSQL 클러스터를 직접 구축하기로 결정하였습니다..**
+**결론: EKS를 사용함으로써 $450 안에서 RDS(특히 HA 구성)는 비용 부담이 너무 커, EC2에 PostgreSQL 클러스터를 직접 구축하기로 결정하였습니다.**
 
 | 비교 항목 | Amazon RDS (관리형) | EC2에 PostgreSQL 직접 구축 |
 | :--- | :--- | :--- |
@@ -221,7 +310,7 @@ Terraform Plan을 Infracost로 분석한 결과, **초기 표준 아키텍처의
 가장 먼저, 전체 비용에서 비중이 컸던 **RDS PostgreSQL Multi-AZ**를 제거하고,  
 동일한 “DB 고가용성(HA)” 기능을 **Self-Hosted PostgreSQL 클러스터**로 대체했습니다.
 
-- **[ADR 3.2] RDS Multi-AZ ($372.16/월) → EC2 + Patroni HA (약 $49.81/월)**
+- **RDS Multi-AZ ($372.16/월) → EC2 + Patroni HA (약 $49.81/월)**
   - RDS Multi-AZ: **약 $372.16 / 월**
   - Self-Hosted PostgreSQL:
     - `t4g.small` EC2 3대: **약 $41.17 / 월**
@@ -252,12 +341,11 @@ Terraform Plan을 Infracost로 분석한 결과, **초기 표준 아키텍처의
 
 
 ---
-
 ### ✅ 2차 절감 – 운영 전략(운영 시간/리소스 관리)
 
 구조를 바꾼 뒤에도 **NAT Gateway, EKS 노드, NLB** 등은  
-**“켜져 있는 시간만큼 계속 과금”**되는 리소스였습니다.  
-그래서 아키텍처 자체뿐 아니라 **“운영 방식”**도 함께 설계했습니다.
+“켜져 있는 시간만큼 계속 과금”되는 리소스였습니다.  
+그래서 아키텍처 자체뿐 아니라 “운영 방식”도 함께 설계했습니다.
 
 #### 1) `terraform destroy` 전략 (핵심)
 
@@ -315,7 +403,7 @@ Terraform Plan을 Infracost로 분석한 결과, **초기 표준 아키텍처의
   - SSH 포트를 Public으로 열지 않고,  
     **VPN 단일 진입점만 관리**하여 보안·운영 부담을 줄임
 
-> 정리하면, **“VPN만 켜면 로컬 서버 다루듯이 접속할 수 있는 구조”**를 목표로 한 접근 제어입니다.
+> 정리하면, “VPN만 켜면 로컬 서버 다루듯이 접속할 수 있는 구조”를 목표로 한 접근 제어입니다.
 
 ---
 
@@ -326,7 +414,7 @@ Terraform Plan을 Infracost로 분석한 결과, **초기 표준 아키텍처의
 - 이 프로젝트의 핵심 목표는
   - **PostgreSQL HA와 클러스터링 내부 동작을 이해하는 것**이었고,
 - 처음부터 끝까지 자동화하면  
-  **“무엇이 어떻게 돌아가는지”를 체감하기 어렵다는 문제가 있었습니다.
+  “무엇이 어떻게 돌아가는지”를 체감하기 어렵다는 문제가 있었습니다.
 
 #### ✅ 역할 분리
 
@@ -400,11 +488,7 @@ VPN 접속 후 각 EC2 서버에 직접 HA 구성을 수행합니다.
 2. PostgreSQL 설치
 3. etcd 구성
 4. Patroni 구성
-5. Pacemaker 설정
-6. Failover 테스트
-
-➡️ `[TODO]` 수동 구성 가이드를 링크 또는 추가 예정
-
+5. Failover 테스트 (Patroni 기반 자동 Failover 확인)
 ---
 
 ## **3단계: 인프라 삭제 (Terraform)**
