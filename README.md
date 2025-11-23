@@ -217,6 +217,7 @@ vSphere와 AWS 클라우드를 연동한 **하이브리드 인프라** 구축을
 - **EKS (Compute) 고가용성**
     - **Managed Control Plane:** EKS 관리형 서비스를 통해 Control Plane(마스터 노드)의 HA 및 장애 복구를 AWS에 위임합니다.
     - **Worker Nodes:** Auto Scaling Group(ASG)을 Multi-AZ로 구성하여, 특정 AZ 장애 또는 노드 장애 시 워커 노드가 자동으로 복구 및 재배포되도록 설정합니다.
+    - **ALB (Ingress):** Kubernetes Ingress(ALB)가 Pod 레벨의 Health Check를 수행하여 비정상 Pod로는 트래픽을 라우팅하지 않습니다.
 
 - **데이터베이스 (Self-Hosted) 고가용성**
     - **RDS 대신 EC2 클러스터링:** 비용 문제로 RDS 대신 EC2 인스턴스를 Multi-AZ에 배포하고, **Patroni**를 사용하여 PostgreSQL DB 클러스터(Active-Standby-Standby)를 자체 구성했습니다.
@@ -233,12 +234,18 @@ vSphere와 AWS 클라우드를 연동한 **하이브리드 인프라** 구축을
         - **etcd (DCS):** 3대의 노드가 `etcd` 클러스터를 구성하여(녹색 화살표) 클러스터의 'Leader'가 누구인지와 같은 상태 정보를 합의하고 공유합니다.
         - **Patroni Agent:** 각 노드의 `patroni` 에이전트(노란색)는 `etcd`와 통신(빨간색 화살표)하여 Leader 정보를 읽고 자신의 상태를 보고하며, 로컬 PostgreSQL 인스턴스를 직접 제어합니다(검은색 수직 화살표).
         - **PostgreSQL:** 다이어그램은 `vm-db02`가 현재 'Leader(Primary)'이며, `vm-db01`, `vm-db03`은 'Replica'로 동작하는 상태를 보여줍니다. 데이터는 Primary에서 Replica로 '물리 복제'(검은색 수평 화살표)됩니다.
-    - **Leader 트래픽 보장 (AWS-native):** 온프레미스의 VIP(가상 IP) 이동 방식과 달리, AWS 환경에 최적화된 **NLB**를 사용합니다. NLB가 Patroni API (8008 포트) 헬스체크를 수행하여 DB 도메인이 항상 'Leader' 노드로만 연결되도록 보장합니다.
-    - *참고: 본 구성은 [patroni로 구현하는 PostgreSQL 고가용성 (postgresql.kr)](https://postgresql.kr/blog/patroni.html) 문서를 기반으로 구현되었습니다.*
+        - *참고: 본 구성은 [patroni로 구현하는 PostgreSQL 고가용성 (postgresql.kr)](https://postgresql.kr/blog/patroni.html) 문서를 기반으로 구현하였습니다.*
 
-- **애플리케이션 트래픽 및 장애 감지**
-    - **ALB (Ingress):** Kubernetes Ingress(ALB)가 Pod 레벨의 Health Check를 수행하여 비정상 Pod로는 트래픽을 라우팅하지 않습니다.
-    - **Route 53:** (필요시) Route 53 Health Check를 구성하여 엔드포인트 장애 시 DNS 레벨에서 트래픽을 차단하거나 다른 리전으로 전환할 수 있습니다.
+    <br>
+
+    <div align="center">
+    <img width="1049" height="619" alt="Image" src="https://github.com/user-attachments/assets/71ab79e5-d168-4f00-a69f-c6831e411a60" />
+    </div>
+
+    <br>
+
+   - **Leader 트래픽 보장 (AWS-native):** 온프레미스의 VIP(가상 IP) 이동 방식과 달리, AWS 환경에 최적화된 **NLB**를 사용합니다. NLB가 Patroni API (8008 포트) 헬스체크를 수행하여 DB 도메인이 항상 'Leader' 노드로만 연결되도록 보장합니다.
+   - - *참고: 본 구성은 [Amazon EC2에서 Patroni 및 etcd를 사용한 PostgreSQL HA 고려 사항 (AWS Prescriptive Guidance)](https://docs.aws.amazon.com/ko_kr/prescriptive-guidance/latest/migration-databases-postgresql-ec2/ha-patroni-etcd-considerations.html)을 기반으로 구현하였습니다.*
 
 <br>
 
