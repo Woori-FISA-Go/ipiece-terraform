@@ -97,7 +97,7 @@ vCenter의 중앙 관리 기능(vMotion·호스트 모니터링·리소스 분�
 <br>
 
 <div align="center">
-  <img src="https://github.com/user-attachments/assets/bc7b6c82-730e-46e1-86ed-8475a582d880"
+  <img src="https://github.com/user-attachments/assets/102d5038-c412-4742-88ba-6747a6896d5e"
        alt="개발자 노트북 WireGuard 설정"
        width="60%" />
 </div>
