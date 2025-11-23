@@ -171,16 +171,37 @@ vSphere와 AWS 클라우드를 연동한 **하이브리드 인프라** 구축을
 <br>
 
 ---
+
+<br>
+
 ### 데이터베이스 구축 방식 (EC2 직접 구축 vs. Amazon RDS)
 
-**결론: EKS를 사용함으로써 $450 안에서 RDS(특히 HA 구성)는 비용 부담이 너무 커, EC2에 PostgreSQL 클러스터를 직접 구축하기로 결정하였습니다.**
+**결론:** EKS의 비용을 고려해서 RDS보다 **EC2 직접 구축**하는 방식으로 선택했습니다.
 
-| 비교 항목 | Amazon RDS (관리형) | EC2에 PostgreSQL 직접 구축 |
+| 비교 항목 | Amazon RDS (관리형) | EC2에 PostgreSQL 직접 구축 **(선정)** |
 | :--- | :--- | :--- |
-| **주요 특징** | **완전 관리형 서비스** | **IaaS 기반 수동 구축** |
-| **월간 비용 (HA 기준)** | **높음** (Multi-AZ 인스턴스 2대 + 스토리지 비용) | **낮음** (Multi-AZ 비용, EC2 인스턴스 3대 + EBS 비용) |
-| **운영 오버헤드** | **낮음** (AWS가 패치, 백업, HA 관리) | **높음** (Patroni 등 HA 솔루션, 관리) |
-| **선택 이유** | 안정적이나, Multi-AZ 구성 시 **예산을 초과**하여 선택지에서 제외. | HA DB 클러스터를 구축할 수 있는 **현실적 대안.** (Patroni 등 활용) |
+| **구성 (HA)** | Multi-AZ (Primary + Standby) | 3-Node Cluster (Quorum 기반) |
+| **인스턴스** | db.t3.medium (2vCPU, 4GB) | t2.medium (2vCPU, 4GB) × 3대 |
+| **월간 비용 (24h 기준)** | **약 $163.52** (예산 부담 큼) | **약 $131.61** (약 20% 절감) |
+| **선택 이유** | 관리 편의성은 높으나 예산 초과 | 예산 내 운영 가능 및 HA 원리 학습 |
+| **비고** | 상세 비용 근거는 3.1 ADR 참조 | OOM 방지를 위해 4GB 메모리 모델 선정 |
+
+<details>
+<summary><strong>💰 AWS Pricing Calculator 기준 </strong></summary>
+<br>
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="https://github.com/user-attachments/assets/17d9a2a1-d2bf-40fb-a871-35ae0e0b83e3" width="100%" />
+    </td>
+    <td align="center" width="50%">
+      <img src="https://github.com/user-attachments/assets/336812f6-ec58-4166-b78b-4d18ed4379f1" width="100%" />
+    </td>
+  </tr>
+</table>
+
+</details>
 
 <br>
 
@@ -283,14 +304,7 @@ vSphere와 AWS 클라우드를 연동한 **하이브리드 인프라** 구축을
 ---
 
 ## 3. ✍️ 주요 아키텍처 결정 (ADR)
-
-AWS 인프라를 설계·운영하면서 내린 핵심 기술 결정을 **ADR(Architectural Decision Record)** 형식으로 정리했습니다.  
-각 결정은 “왜 이렇게 설계했는지?”를 설명하기 위한 기록입니다.
-
----
-
 ### 3.1. 비용 최적화: 표준 아키텍처 ($1,054) → 경량 아키텍처 (70%+ 절감)
-
 #### 🧩 문제 상황 – 초기 표준 아키텍처 비용
 
 Terraform Plan을 Infracost로 분석한 결과, **초기 표준 아키텍처의 월 예상 비용은 약 $1,054**였습니다.
@@ -309,75 +323,121 @@ Terraform Plan을 Infracost로 분석한 결과, **초기 표준 아키텍처의
 
 가장 먼저, 전체 비용에서 비중이 컸던 **RDS PostgreSQL Multi-AZ**를 제거하고,  
 동일한 “DB 고가용성(HA)” 기능을 **Self-Hosted PostgreSQL 클러스터**로 대체했습니다.
+### 🔍 [상세 비용 비교 분석 – AWS Pricing Calculator 기준]
 
-- **RDS Multi-AZ ($372.16/월) → EC2 + Patroni HA (약 $49.81/월)**
-  - RDS Multi-AZ: **약 $372.16 / 월**
-  - Self-Hosted PostgreSQL:
-    - `t4g.small` EC2 3대: **약 $41.17 / 월**
-    - EBS 스토리지: **약 $8.64 / 월**
-    - → 합계 **약 $49.81 / 월**
-- **절감 효과**
-  - DB 영역만 놓고 보면, **월 약 $322.35** 절감 (약 86% 절감)
-  - 기능 측면에서는 여전히 **Multi-AZ + 자동 Failover 구조**를 유지
-
-> 즉, “RDS의 편의성” 대신 “직접 구성한 HA 클러스터”를 선택함으로써  
-> **예산 내에서 엔터프라이즈급 아키텍처 학습**이 가능하도록 구조를 조정했습니다.
-
-#### 🎯 의도한 학습 포인트
-
-1. **HA 메커니즘을 직접 체득**
-   - Failover가 언제, 어떤 조건에서 일어나는지
-   - Primary/Replica 전환 시 클라이언트(애플리케이션) 측 영향
-   - 현재는 **Patroni + etcd 기반 자동 Failover**까지 구현했고,  
-     Pacemaker/STONITH를 연동한 고가용성은 **향후 실습 과제로 남겨둠**
-2. **클라우드 종속성 감소**
-   - RDS에만 익숙해지면,  
-     온프레미스/다른 클라우드에서 동일 수준의 HA를 설계하기 어려움
-   - 온프레미스/PostgreSQL HA 구성경험을 바탕으로 EC2 + Patroni로 AWS에서 HA 구축
-
-> 결과적으로, RDS에 의존하지 않고  
-> “Patroni 기반 PostgreSQL HA를 직접 구성할 수 있는 역량”을 목표로 하는 설계이며,  
-> 이후 Pacemaker/STONITH까지 확장해보는 것을 장기 학습 계획으로 두고 있습니다.
-
-
----
-### ✅ 2차 절감 – 운영 전략(운영 시간/리소스 관리)
-
-구조를 바꾼 뒤에도 **NAT Gateway, EKS 노드, NLB** 등은  
-“켜져 있는 시간만큼 계속 과금”되는 리소스였습니다.  
-그래서 아키텍처 자체뿐 아니라 “운영 방식”도 함께 설계했습니다.
-
-#### 1) `terraform destroy` 전략 (핵심)
-
-- 개발/실습 시간: **평일 09:00 ~ 21:00 (약 12시간/일)** 만 인프라 유지
-- 나머지 시간(야간/주말 등):
-  - 프로젝트 초기에 `terraform destroy`를 통해
-    - **EKS 노드 그룹**
-    - **Multi-AZ NAT Gateway**
-    - **DB용 NLB**
-  - 등 **비용이 큰 리소스를 전부 삭제**
-- 월 730시간 중 **약 360시간(12h × 30일)만 실제 운영**
-  - → 해당 리소스들의 **운영비를 약 50.7% 추가 절감**
-
-#### 2) 완전 destroy가 어려운 경우 – 유지보수 모드(Hibernation)
-
-실습 데이터나 환경을 유지해야 하는 경우에는, 완전 삭제 대신 **최소 비용 모드**를 사용했습니다.
-
-- **EKS 노드 그룹**
-  - Auto Scaling Group의 `Desired/Min/Max = 0/0/0`으로 설정해 **워커 노드 비용 0**으로 유지
-- **NAT Gateway, NLB**
-  - 외부 트래픽이 필요 없을 때는 **리소스 자체를 삭제**
-- **남는 비용**
-  - EKS Control Plane(약 $73/월) + EBS 스토리지 등 **최소한의 비용만 유지**
+| 비교 항목 | Option A: Amazon RDS (Multi-AZ) | Option B: EC2 Self-Hosted (최종 선정) |
+| :--- | :--- | :--- |
+| **타겟 모델** | db.t3.medium (Multi-AZ) | t2.medium × 3대 (Quorum Cluster) |
+| **사양** | 2vCPU / 4GB RAM / 20GB SSD | 2vCPU / 4GB RAM / 20GB SSD (대당) |
+| **월간 비용** | **$163.52** | **$131.61** |
+| **절감 효과** | - | **월 약 $32 절감 (약 20%)** |
 
 ---
 
-### 📌 최종 효과 – 예산 $450 내에서의 운영
+## 💡 기술적 의사결정 근거 1: 인스턴스 패밀리 선정 (Why T2 Family?)
 
-- **1차 절감 (구조 변경: RDS → EC2 Self-Hosted)**
-  - DB 비용만 놓고 **약 $322.35/월 절감**
+| 비교 모델 | 아키텍처 | 특징 | 선정 여부 |
+| :--- | :--- | :--- | :--- |
+| **t4g.medium** | ARM(Graviton2) | 성능/가격 최상 | ❌ 기각: Patroni, etcd, Exporter 등 ARM 호환성 리스크 |
+| **t3.medium** | x86 | 최신/고성능 | ❌ 기각: Unlimited 모드 → 크레딧 과금 리스크 |
+| **t2.medium** | x86 | 안정적/예측 가능한 비용 | ✅ 최종 선정: Standard 모드 → 비용 확정성 |
+
+---
+
+## 💡 기술적 의사결정 근거 2: 사이즈 선정 (Why medium? 4GB RAM)
+
+단순히 “저렴한 스펙”이 아니라, **HA 구성(Patroni + etcd + PostgreSQL)** 이 안정적으로 동작하기 위한  
+**메모리 Footprint와 비용 구조를 동시에 고려**하여 최적 사양을 결정했습니다.
+
+### 🔍 메모리 안정성 비교 (t2.micro → t2.medium → t2.large)
+
+| 프로세스 / 영역 | t2.micro (1GB) | t2.medium (4GB) | t2.large (8GB) |
+| :--- | :--- | :--- | :--- |
+| PostgreSQL + Connection | ❌ OOM 발생 | ✅ 안정적 | ✅ 안정적 |
+| etcd (HA State) | ❌ Swap → Heartbeat 지연 | ✅ 메모리 안착 | ✅ 메모리 여유 |
+| Failover 안정성 | ❌ Split-brain 빈발 | ✅ 정상 Failover | ✅ 정상 Failover |
+| 비용 효율 | ⭐ 매우 저렴 | ⭐ 균형 | ❌ 고비용 |
+
+<details>
+<summary><strong>💰 AWS Pricing Calculator 기준 </strong></summary>
+<br>
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="https://github.com/user-attachments/assets/17d9a2a1-d2bf-40fb-a871-35ae0e0b83e3" width="100%" />
+    </td>
+    <td align="center" width="50%">
+      <img src="https://github.com/user-attachments/assets/2f4a4f98-2e6c-4910-a313-3e00b1c0c8c3" width="100%" />
+    </td>
+  </tr>
+</table>
+
+</details>
+
+---
+
+### ❗ 최종 결론
+1GB·2GB(micro/small) 사양은 HA 환경에서 OOM 및 Split-brain 발생 위험으로 인해 적합하지 않았으며, 8GB(large) 사양은 예산을 초과하였습니다. 따라서 4GB(medium) 사양이 비용과 안정성의 균형을 만족하여 선택하였습니다.
+
+
+<details>
+  
+<summary><strong> 🎯 학습 포인트 </strong></summary>
+
+1) **HA 메커니즘 직접 체득**  
+- Primary/Replica 전환 조건  
+- etcd Quorum 손실 시 동작  
+- Patroni 기반 자동 Failover 구조 이해  
+
+2) **클라우드 종속성 감소 (Vendor Lock-in 방지)**  
+- RDS 없이도 동일한 HA 구조를 EC2/온프레미스에서 재현 가능  
+- PostgreSQL HA 전 과정을 직접 경험하여 운영 역량 강화
+
+</details>
+
+---
+
+## ✅ 2차 절감 – 운영 전략(On-Demand Scheduling)
+
+EC2 기반 DB 구조만으로도 **월 $131.61 → 약 $60~70 수준**까지 추가 절감 가능했습니다.  
+"**사용하지 않을 때는 과금하지 않는다**"는 클라우드의 기본 원칙을 지켰습니다.
+
+### 1) 인프라 수명주기 제어 (terraform destroy)
+
+**대상:** 상태 보존 불필요 리소스  
+- EKS Worker Nodes  
+- NAT Gateway  
+- NLB 등
+
+**전략:**
+- 개발 시간: 평일 09:00 ~ 02:00 → 인프라 유지  
+- 야간/주말: `terraform destroy` 실행 → 비용 0원 처리  
+- 시간 기반 과금 리소스 비용 **약 50% 절감**
+
+---
+
+### 2) DB 서버 최적화 (Stop → Start 전략)
+
+**대상:** 데이터 보존 필수 리소스 (EC2 DB 클러스터)
+
+**전략:**
+- 매일 퇴근 시 EC2 Stop  
+- 실행 중이 아닐 때는 Compute 비용 0원  
+- EBS 비용만 유지  
+
+**효과:**  
+- 실질 DB 비용: **131.61 → 60~70달러 수준**
+
+---
+
+## 📌 최종 절감 효과
+
+- **설계 최적화:**  
+  RDS 대비 약 20% 비용 절감할 수 있었습니다. ($163 → $131)
+
 - **2차 절감 (운영 전략: `terraform destroy` + Hibernation)**
-  - EKS / NAT GW / NLB 등 **시간 기반 과금 리소스 비용을 50% 이상 절감**
+  - EKS / NAT GW / NLB 등 시간 기반 과금 리소스 비용을 50% 이상 절감할 수 있었습니다.
 
 ---
 
